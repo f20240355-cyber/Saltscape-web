@@ -13,7 +13,7 @@ const MIN_ROOT=35; // below this, crop demand begins to be unmet in simplified m
 const DAILY_IRRIGATION_EFF=.90;
 const SALT_EC_APPROX=.64; // grams/L per dS/m; rough TDS conversion, strongly composition dependent
 const BASE_WEEKLY_ET0=5.5*7;
-let current=null;let optimized=null;let lastHumanShares=[35,35,30];
+let current=null;let optimized=null;let lastHumanShares=[35,35,30];let twinMode="human";let playTimer=null;
 const $=id=>document.getElementById(id);
 const fmt=(x,d=1)=>Number(x).toFixed(d);
 const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
@@ -68,21 +68,43 @@ function weekModel(cfg,s){
  const score=100*(.70*stressN+.30*saltN);
  return {cfg,shares:s.slice(),budget,d,records,totalDemand,totalDef,used:budget*8,score,stressN,saltN};
 }
-function optimize(cfg){
+function optimize(cfg,minimum=10){
  // Exhaustive discretized search in 5% increments; all candidates spend the same budget.
  // This avoids random or invented outcomes and makes the optimization reproducible.
  let best=null;
- for(let a=0;a<=100;a+=5){for(let b=0;b<=100-a;b+=5){const c=100-a-b;
+ for(let a=minimum;a<=100-2*minimum;a+=5){for(let b=minimum;b<=100-a-minimum;b+=5){const c=100-a-b;
    const test=weekModel(cfg,[a,b,c]);
    if(!best||test.score<best.score-1e-10)best=test;
  }}
  return best;
 }
+function currentMinimum(){return $('fairness').checked?10:0;}
+function useTwinData(){return twinMode==='optimized'&&optimized?optimized:current;}
+function renderTwin(){
+ const data=useTwinData();if(!data)return;const week=+$('twin-week').value;
+ $('twin-week-label').textContent='Week '+week;
+ $('twin-human').classList.toggle('selected',twinMode==='human');$('twin-optimized').classList.toggle('selected',twinMode==='optimized');
+ $('farm-twin').innerHTML=data.records.map((r,i)=>{
+  const t=r.trajectory[week];const demand=r.crop.kc*data.cfg.eto*7;
+  const stress=clamp(t.stress,0,1);const saltRise=Math.max(0,(t.salt-r.initialSalt)/Math.max(r.initialSalt,.01));
+  const hue=clamp(137-105*stress-18*Math.min(saltRise,2),22,137);const dryness=clamp(stress*100,0,100);const saltOverlay=clamp(saltRise*20,0,60);
+  const growth=clamp(1-stress*.7,0.3,1);const vegetation=Array.from({length:18},(_,j)=>`<span class="twin-plant" style="left:${8+(j%6)*16}%;top:${12+Math.floor(j/6)*23}%;transform:rotate(-20deg) scale(${growth});opacity:${.5+(1-stress)*.5}">✣</span>`).join('');
+  return `<button type="button" class="twin-plot" data-field="${i}" style="--crop-hue:${hue};--dryness:${dryness}%;--salt-overlay:${saltOverlay}%;--plant-color:${r.crop.color}"><div class="twin-plot-head"><span>FIELD ${r.crop.id}</span><strong>${r.crop.name}</strong></div><div class="twin-ground"><div class="twin-rows"></div>${vegetation}<div class="twin-salt"></div></div><div class="twin-underground"><div class="twin-moisture" style="width:${clamp(t.store/ROOT_CAP*100,0,100)}%"></div><span>ROOT-ZONE WATER</span></div><div class="twin-plot-foot"><span>Water gap <b>${fmt(t.shortfall,1)} mm</b></span><span>Salt <b>${fmt(t.salt,3)} kg/m²</b></span></div></button>`;
+ }).join('');
+ $('farm-twin').querySelectorAll('[data-field]').forEach(el=>el.addEventListener('click',()=>{$('inspect-field').value=el.dataset.field;renderInspector();}));
+ renderInspector();
+}
+function renderInspector(){const data=useTwinData();if(!data)return;const w=+$('twin-week').value;const idx=+$('inspect-field').value;const r=data.records[idx],t=r.trajectory[w];const percent=100*Math.max(0,1-t.stress);
+ $('twin-inspector').innerHTML=`<div class="inspector-heading"><span>${r.crop.icon} ${r.crop.name}</span><small>Week ${w} · ${twinMode==='human'?'your strategy':'optimized strategy'}</small></div><div class="inspector-metrics"><div>Salt stored<strong>${fmt(t.salt,3)} kg/m²</strong></div><div>Soil-water storage<strong>${fmt(t.store,1)} mm</strong></div><div>Weekly unmet demand<strong>${fmt(t.shortfall,1)} mm</strong></div><div>Weekly drainage<strong>${fmt(t.drained,1)} mm</strong></div></div><div class="model-bar-title">Weekly demand met <b>${fmt(percent,0)}%</b></div><div class="model-bar"><span style="width:${percent}%"></span></div><p class="inspector-note">These are outputs of a simplified root-zone water/salt mass balance, not measured field conditions.</p>`;
+}
+function syncWeek(value){$('week').value=value;$('twin-week').value=value;renderWeek(current);renderTwin();}
+function stopTwinPlayback(){if(playTimer){clearInterval(playTimer);playTimer=null;}$('twin-play').textContent='▶ Play 8-week reveal';}
+function startTwinPlayback(){stopTwinPlayback();syncWeek(0);$('twin-play').textContent='Ⅱ Pause reveal';let w=0;playTimer=setInterval(()=>{w++;syncWeek(w);if(w>=8)stopTwinPlayback();},650);}
 function setScenario(key){const settings={normal:[5,.6,5],drought:[40,2.5,5.5],saline:[50,5.2,6.5]};if(!settings[key])return;const [s,e,t]=settings[key];$('shortage').value=s;$('ecw').value=e;$('eto').value=t;update();}
 function update(){const cfg=readConfig(),{d,budget}=resources(cfg);$('shortage-value').textContent=cfg.shortage+'%';$('ecw-value').textContent=fmt(cfg.ecw)+' dS/m';$('eto-value').textContent=fmt(cfg.eto)+' mm';$('metric-budget').textContent=fmt(budget,0);$('metric-demand').textContent=fmt(d.reduce((a,b)=>a+b,0),0);$('metric-shortage').textContent=cfg.shortage+'%';$('metric-ec').textContent=fmt(cfg.ecw);
  const s=shares();const sum=s.reduce((a,b)=>a+b,0);$('allocation-total').classList.toggle('bad',!sharesAreValid(s));$('allocation-total').innerHTML='<span>ALLOCATED</span><strong>'+sum+'% of 100%</strong>';
  CROPS.forEach((c,i)=>{$('share-value-'+c.id).textContent=s[i]+'% · '+fmt(budget*s[i]/100,1)+' m³/week';});
- $('input-error').textContent=sharesAreValid(s)?'':'Allocation must total exactly 100%. Adjust the three sliders.';
+ $('input-error').textContent=sharesAreValid(s)?'':'Allocation must total exactly 100%. Adjust the three sliders.';if(sharesAreValid(s)){current=weekModel(cfg,s);optimized=optimize(cfg,currentMinimum());if($('week'))renderWeek(current);renderTwin();comparison();}
 }
 function renderFields(data,week=8){$('field-cards').innerHTML=data.records.map((r,i)=>{
  const t=r.trajectory[week];const stress=t.stress;const risk=stress>.22?'high':stress>.07?'moderate':'low';const riskLabel=risk==='high'?'HIGH WATER STRESS':risk==='moderate'?'MODERATE STRESS':'LOW WATER STRESS';
@@ -93,15 +115,15 @@ function chart(data,week){const width=660,height=240,pad={l:58,r:14,t:14,b:31};c
  for(let w=0;w<=8;w++){svg+=`<text x="${x(w)}" y="${height-5}" text-anchor="middle" font-size="10" fill="#84a19e">${w}</text>`;}
  svg+=`<line x1="${x(week)}" y1="${pad.t}" x2="${x(week)}" y2="${height-pad.b}" stroke="#bad9ce" stroke-dasharray="4 5" opacity=".65"/>`;
  data.records.forEach(r=>{const coords=r.trajectory.map(p=>`${x(p.week)},${y(p.salt)}`).join(' ');svg+=`<polyline points="${coords}" fill="none" stroke="${r.crop.color}" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round"/>`;const point=r.trajectory[week];svg+=`<circle cx="${x(week)}" cy="${y(point.salt)}" r="4.3" fill="${r.crop.color}" stroke="#071318" stroke-width="2"/>`;});svg+='</svg>';$('salt-chart').innerHTML=svg;}
-function renderWeek(data){const week=+$('week').value;$('week-label').textContent='Week '+week;$('insight-week').textContent=week;renderFields(data,week);chart(data,week);$('week-conditions').innerHTML=data.records.map(r=>{const t=r.trajectory[week];return `<div class="insight-row"><div class="first">${r.crop.name}<span>${fmt(t.salt,3)} kg/m²</span></div><div class="second">Salt stored in modeled root zone · weekly deficit ${fmt(t.shortfall,1)} mm</div></div>`;}).join('');}
+function renderWeek(data){if(!data)return;const week=+$('week').value;$('week-label').textContent='Week '+week;$('insight-week').textContent=week;renderFields(data,week);chart(data,week);$('week-conditions').innerHTML=data.records.map(r=>{const t=r.trajectory[week];return `<div class="insight-row"><div class="first">${r.crop.name}<span>${fmt(t.salt,3)} kg/m²</span></div><div class="second">Salt stored in modeled root zone · weekly deficit ${fmt(t.shortfall,1)} mm</div></div>`;}).join('');}
 function summaryCards(data,target){$(target).innerHTML=`<div>8-week water use<strong>${fmt(data.used,0)} m³</strong></div><div>Unmet crop demand<strong>${fmt(data.totalDef,0)} m³</strong></div><div>Salt risk component<strong>${fmt(data.saltN,2)}</strong></div><div>Water stress component<strong>${fmt(data.stressN,2)}</strong></div>`;}
-function comparison(){if(!current||!optimized)return;$('human-score').textContent=fmt(current.score);$('ai-score').textContent=fmt(optimized.score);summaryCards(current,'human-stats');summaryCards(optimized,'ai-stats');const diff=current.score-optimized.score;const changed=CROPS.map((c,i)=>`${c.name}: ${optimized.shares[i]}%`).join(', ');if(diff<.01){$('conclusion-title').textContent='You matched the optimizer';$('conclusion-text').textContent=`Your allocation performs as well as the best 5%-increment allocation in this model. Optimizer allocation: ${changed}.`;}else{$('conclusion-title').textContent='A different allocation reduces modeled penalty';$('conclusion-text').textContent=`The search lowers the weighted penalty by ${fmt(diff,1)} points under the same water supply. Suggested allocation: ${changed}. This does not establish real-world superiority.`;}}
-function run(opt=false){const cfg=readConfig(),s=shares();if(!sharesAreValid(s)){$('input-error').textContent='Please make the three allocation sliders add up to exactly 100%.';$('laboratory').scrollIntoView({behavior:'smooth'});return;}lastHumanShares=s;current=weekModel(cfg,s);optimized=optimize(cfg);$('result-badge').textContent=opt?'OPTIMIZER COMPARISON':'PLAYER SIMULATION';$('week').value=8;renderWeek(current);comparison();(opt?$('compare'):$('results')).scrollIntoView({behavior:'smooth'});}
+function comparison(){if(!current||!optimized)return;$('human-score').textContent=fmt(current.score);$('ai-score').textContent=fmt(optimized.score);$('optimizer-policy').textContent='Optimizer minimum allocation: '+currentMinimum()+'% per field';summaryCards(current,'human-stats');summaryCards(optimized,'ai-stats');const diff=current.score-optimized.score;const changed=CROPS.map((c,i)=>`${c.name}: ${optimized.shares[i]}%`).join(', ');if(diff<.01){$('conclusion-title').textContent='You matched the optimizer';$('conclusion-text').textContent=`Your allocation performs as well as the best 5%-increment allocation in this model. Optimizer allocation: ${changed}.`;}else{$('conclusion-title').textContent='A different allocation reduces modeled penalty';$('conclusion-text').textContent=`The search lowers the weighted penalty by ${fmt(diff,1)} points under the same water supply. Suggested allocation: ${changed}. This does not establish real-world superiority.`;}}
+function run(opt=false){const cfg=readConfig(),s=shares();if(!sharesAreValid(s)){$('input-error').textContent='Please make the three allocation sliders add up to exactly 100%.';$('laboratory').scrollIntoView({behavior:'smooth'});return;}lastHumanShares=s;current=weekModel(cfg,s);optimized=optimize(cfg,currentMinimum());$('result-badge').textContent=opt?'OPTIMIZER COMPARISON':'PLAYER SIMULATION';$('week').value=8;renderWeek(current);renderTwin();comparison();(opt?$('compare'):$('results')).scrollIntoView({behavior:'smooth'});}
 function downloadCsv(){if(!current)return;const lines=['strategy,field,week,salt_kg_m2,water_storage_mm,water_deficit_mm,drainage_mm,irrigation_m3'];for(const [name,data] of [['player',current],['optimizer',optimized]]){data.records.forEach(r=>r.trajectory.forEach(t=>lines.push(`${name},${r.crop.name},${t.week},${t.salt},${t.store},${t.shortfall},${t.drained},${t.irrigated}`)));}const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='saltscape_eight_week_results.csv';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function init(){ $('allocation-controls').innerHTML=CROPS.map((c,i)=>`<div class="allocation-row"><div class="crop-name"><span>${c.icon} &nbsp;${c.name}</span><strong id="share-value-${c.id}">—</strong></div><div class="crop-sub">Field ${c.id} · salinity sensitivity weight ${c.sensitivity}</div><input aria-label="${c.name} water share" type="range" id="share-${c.id}" min="0" max="100" step="5" value="${lastHumanShares[i]}"></div>`).join('');
  for(const id of ['shortage','ecw','eto'])$(id).addEventListener('input',()=>{$('preset').value='custom';update();});
- CROPS.forEach(c=>$('share-'+c.id).addEventListener('input',update));$('preset').addEventListener('change',e=>setScenario(e.target.value));$('simulate').addEventListener('click',()=>run(false));$('optimize').addEventListener('click',()=>run(true));$('recalculate').addEventListener('click',()=>run(true));$('week').addEventListener('input',()=>renderWeek(current));$('download').addEventListener('click',downloadCsv);
+ CROPS.forEach(c=>$('share-'+c.id).addEventListener('input',update));$('preset').addEventListener('change',e=>setScenario(e.target.value));$('simulate').addEventListener('click',()=>run(false));$('optimize').addEventListener('click',()=>run(true));$('recalculate').addEventListener('click',()=>run(true));$('week').addEventListener('input',()=>syncWeek(+$('week').value));$('twin-week').addEventListener('input',()=>syncWeek(+$('twin-week').value));$('twin-human').addEventListener('click',()=>{twinMode='human';renderTwin();});$('twin-optimized').addEventListener('click',()=>{twinMode='optimized';renderTwin();});$('inspect-field').addEventListener('change',renderInspector);$('twin-play').addEventListener('click',()=>{if(playTimer)stopTwinPlayback();else startTwinPlayback();});$('fairness').addEventListener('change',()=>{optimized=optimize(readConfig(),currentMinimum());comparison();renderTwin();});$('download').addEventListener('click',downloadCsv);
  document.querySelectorAll('.nav').forEach(el=>el.addEventListener('click',()=>{document.querySelectorAll('.nav').forEach(n=>n.classList.remove('active'));el.classList.add('active');}));
- update();current=weekModel(readConfig(),lastHumanShares);optimized=optimize(readConfig());renderWeek(current);comparison();
+ update();current=weekModel(readConfig(),lastHumanShares);optimized=optimize(readConfig(),currentMinimum());renderWeek(current);renderTwin();comparison();
 }
 init();
